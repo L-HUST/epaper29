@@ -36,7 +36,7 @@ public:
                  int8_t pin_rst = PIN_EPD_RST, int8_t pin_busy = PIN_EPD_BUSY,
                  int8_t pin_mosi = PIN_EPD_MOSI, int8_t pin_sck = PIN_EPD_SCK);
 
-    // 上电初始化；会把型号、BUSY/STATUS 打到串口便于排查
+    // 上电初始化；会把型号、BUSY 电平打到串口便于排查
     void begin();
 
     // ---- 画图（只动内存）----
@@ -71,8 +71,6 @@ public:
     void sleep();
 
     uint8_t *buffer() { return _buf; }
-    // 初始化时从屏读回的状态字节；0x00 / 0xFF 说明 SPI 没通
-    uint8_t status() const { return _status; }
 
 private:
     void reset();
@@ -86,7 +84,6 @@ private:
 
     int8_t _cs, _dc, _rst, _busy, _mosi, _sck;
     uint8_t _buf[EPD_BYTES];
-    uint8_t _status = 0;
     bool _spi_ready;
     bool _asleep;
 };

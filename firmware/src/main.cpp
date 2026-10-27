@@ -121,26 +121,6 @@ static void home(bool full) {
 #endif
 }
 
-static void update_values(bool partial) {
-#if EPD_HEIGHT >= 200
-    char b[24];
-    snprintf(b, sizeof(b), "%-9lu", (unsigned long)(millis() / 1000));
-    draw_value(16 + 9 * 18, 78, b, 240);
-
-    static uint32_t n = 0;
-    n = (n * 37 + 11) % 100000;
-    snprintf(b, sizeof(b), "%-9lu", (unsigned long)n);
-    draw_value(16 + 7 * 18, 120, b, 240);
-
-    if (partial) epd.display_partial_margin(8, 72, EPD_WIDTH - 16, 80, 8);
-#else
-    // 小屏：整页重画内存再局刷一次，不折腾局部窗口
-    home(false);
-    if (partial) epd.display_partial_margin(0, 0, EPD_WIDTH, EPD_HEIGHT, 4);
-    else         epd.display_full();
-#endif
-}
-
 // ---------------- 串口收图 ----------------
 static bool read_full_frame() {
     uint8_t magic[2] = {0, 0};
@@ -210,37 +190,6 @@ static void go_sleep() {
 // 如果只有几毫秒，说明屏根本没被驱动（供电/接线问题）
 static uint32_t g_splash_ms = 0;
 static uint32_t g_refresh_ms = 0;
-
-// ---------------------------------------------------------------- 接线自检
-// 把 DIN/CLK 和 CS/DC 可能接反的 4 种组合各试一次，看哪种能让屏响应。
-// 判断依据：真正刷屏时 BUSY 会拉高，全过程约 5000ms；没响应只有几毫秒。
-static void probe_wiring() {
-    const int combos[4][4] = {
-        {PIN_EPD_MOSI, PIN_EPD_SCK, PIN_EPD_CS, PIN_EPD_DC},   // 当前接法
-        {PIN_EPD_SCK,  PIN_EPD_MOSI, PIN_EPD_CS, PIN_EPD_DC},  // DIN/CLK 对调
-        {PIN_EPD_MOSI, PIN_EPD_SCK, PIN_EPD_DC, PIN_EPD_CS},   // CS/DC 对调
-        {PIN_EPD_SCK,  PIN_EPD_MOSI, PIN_EPD_DC, PIN_EPD_CS},  // 两组都对调
-    };
-    const char *names[4] = {"原样", "DIN/CLK 对调", "CS/DC 对调", "两组都对调"};
-
-    Serial.println("[probe] 开始探测 4 种接法，每组约 5 秒...");
-    for (int i = 0; i < 4; i++) {
-        EPD *e = new EPD(combos[i][2], combos[i][3], PIN_EPD_RST,
-                         PIN_EPD_BUSY, combos[i][0], combos[i][1]);
-        uint32_t t0 = millis();
-        e->begin();
-        e->clear(EPD_WHITE);
-        e->draw_text(10, 10, "PROBE", EPD_BLACK, 2);
-        e->display_full();
-        uint32_t dt = millis() - t0;
-        Serial.printf("[probe] %-14s MOSI=%2d SCK=%2d CS=%2d DC=%2d -> %5lu ms %s\n",
-                      names[i], combos[i][0], combos[i][1], combos[i][2],
-                      combos[i][3], (unsigned long)dt,
-                      dt > 1000 ? "  <<< 这个接法有效！" : "");
-        delete e;
-    }
-    Serial.println("[probe] 探测结束");
-}
 
 // ================================================================
 // 官方例程原样测试（epd2in9_V2 的命令序列一个字不改，只换引脚号）
@@ -341,9 +290,6 @@ void setup() {
 #endif
 
     epd.begin();            // 初始化 SPI + 屏（跳过它 SPI 都没初始化）
-
-    // 接线已确认：探测会额外跑 4 轮并在超时后误报，调试完成后关掉
-    // probe_wiring();
 
     // 一次全刷出首页。自检页只在 SHOW_SPLASH=1 时才画（调试接线用），
     // 否则每次开机都要闪两下。

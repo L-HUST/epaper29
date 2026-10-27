@@ -109,7 +109,7 @@ READY.
 │  ├─ push.py             文字/图片/整本书 → 位图 → 串口
 │  ├─ read.py             键盘翻页（n/p/f/s/q）
 │  ├─ genfont.py          重新生成固件字库
-│  ├─ mockup.py / wiring_figs.py  生成文档插图
+│  ├─ cap_serial.py       抓开机日志（板子一插就复位，用它）
 │  └─ sample_book.txt     分页样书
 ├─ docs/00-完全手册.md    ← 详细教程（采购、原理、扩展、踩坑记录）
 └─ vendor_demo/           厂商例程原样对照（怀疑驱动出错时拿它比对）

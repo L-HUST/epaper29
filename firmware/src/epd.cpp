@@ -41,7 +41,6 @@ static_assert(EPD_WIDTH % 8 == 0, "屏宽必须是 8 的整数倍，否则显存
 #define C_VCOM_INTERVAL     0x50
 #define C_TCON_SETTING      0x60
 #define C_RESOLUTION        0x61
-#define C_STATUS            0x71
 #define C_VCM_DC_SETTING    0x82
 #define C_PARTIAL_IN        0x91
 #define C_PARTIAL_OUT       0x92
