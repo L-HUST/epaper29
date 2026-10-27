@@ -1,0 +1,8 @@
+{
+  "name": "ws_epd",
+  "version": "1.0.0",
+  "description": "Waveshare e-Paper ESP32 driver library (subset: 2.9inch V2 + GUI_Paint)",
+  "build": {
+    "srcDir": "."
+  }
+}

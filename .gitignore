@@ -1,0 +1,21 @@
+# ---- Python 环境（本机用，绝对不要提交）----
+.venv/
+__pycache__/
+*.py[cod]
+
+# ---- PlatformIO 编译产物（每次编译自动重建，100 MB 级别）----
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+
+# ---- 运行产物 / 日志 / 缓存 ----
+*.log
+out.png
+preview*.png
+*.pages.json
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.DS_Store
+Thumbs.db

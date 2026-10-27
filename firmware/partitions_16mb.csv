@@ -1,0 +1,12 @@
+# partitions_16mb.csv -- 16MB flash layout for ESP32-S3 N16R8
+# 4MB app + 11.9MB LittleFS (books)
+# NOTE: keep this file ASCII-only. PlatformIO reads it with the system
+# default codec (GBK on Chinese Windows) and non-ASCII comments crash
+# _parse_partitions with UnicodeDecodeError.
+#
+# Name,    Type, SubType,  Offset,   Size,      Flags
+nvs,       data, nvs,      0x9000,   0x5000,
+otadata,   data, ota,      0xE000,   0x2000,
+app0,      app,  ota_0,    0x10000,  0x400000,
+spiffs,    data, spiffs,   0x410000, 0xBE0000,
+coredump,  data, coredump, 0xFF0000, 0x10000,

@@ -1,0 +1,19 @@
+# 统一换行符，避免 Windows/Linux 协作时整文件显示被改
+* text=auto
+
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.c   text
+*.h   text
+*.cpp text
+*.py  text
+*.md  text
+*.json text
+*.ini text
+*.csv text
+
+*.png binary
+*.jpg binary
+*.bin binary
