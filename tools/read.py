@@ -26,28 +26,12 @@ read.py —— 连续阅读：键盘翻页，自动管理残影
 """
 import argparse
 import os
-import struct
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from push import (MODELS, DEFAULT_MODEL, layout, render_page, image_to_bitmap,
-                  book_pages, MAGIC, ACK, crc16_ccitt)
-
-
-def send_frame(port, data):
-    port.reset_input_buffer()
-    port.write(MAGIC)
-    port.flush()
-    r = port.read(1)
-    if not r or r[0] != ACK:
-        raise IOError("设备没回 ACK（收到 %r）" % r)
-    head = bytearray(512)
-    struct.pack_into("<I", head, 0, len(data))
-    port.write(bytes(head))
-    port.write(data)
-    port.write(struct.pack(">H", crc16_ccitt(data)))
-    port.flush()
-    return port.readline().decode("ascii", "replace").strip()
+                  book_pages, send_frame, wait_ready)
 
 
 def send_cmd(port, ch):
@@ -61,11 +45,10 @@ def render(model, pages, total, page_no, size, line_k, no_header, invert, path):
     hdr = None if no_header else "H"
     ftr = None if no_header else "F"
     L = layout(model, size, line_k, 12, header=hdr, footer=ftr)
-    pct = (p["line"] + len(p["lines"])) * 100 // max(1, total)
     img = render_page(model, p["lines"], L,
                       header=None if no_header else
                       "%s  p%d/%d" % (os.path.basename(path), page_no, len(pages)),
-                      footer=None if no_header else "%d%%" % pct)
+                      footer=None)          # 不再显示底部百分比
     return image_to_bitmap(model, img, dither=False, invert=invert, fit=False)
 
 
@@ -148,6 +131,15 @@ def main():
     cache = {}
 
     with serial.Serial(args.port, args.baud, timeout=10.0) as port:
+        # 打开串口会把板子复位（S3 的 DTR/RTS 自动复位电路），先放线再等它就绪
+        port.dtr = False
+        port.rts = False
+        time.sleep(0.2)
+        port.reset_input_buffer()
+        if wait_ready(port):
+            print("设备已就绪")
+        else:
+            print("没等到 READY，直接开始（板子可能没被复位）")
         print("已连上 %s，n=下一页 p=上一页 f=全刷 s=休眠 q=退出" % args.port)
         while True:
             if page not in cache:
@@ -155,7 +147,13 @@ def main():
                                      args.no_header, args.invert, args.book)
             bw = cache[page]
             # 每 refresh_every 页插一次全刷：先推图（设备收到就全刷，不带局刷）
-            r = send_frame(port, bw)
+            try:
+                r = send_frame(port, bw)
+            except IOError as e:
+                print("发送失败：", e)
+                print("  最常见原因是 --model 和固件不一致：这块屏是 29。"
+                      "本工具默认为 %s，必要时加 --model 29" % DEFAULT_MODEL)
+                break
             print("第 %d/%d 页 -> %s" % (page, len(pages), r))
 
             k = get_key()

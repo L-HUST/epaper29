@@ -68,7 +68,7 @@ MODELS = {
     "42":  Model("42",  "4.2inch",  400, 300),
     "426": Model("426", "4.26inch", 800, 480),
 }
-DEFAULT_MODEL = "42"
+DEFAULT_MODEL = "29"      # 本项目主线是 2.9 寸；换屏加 --model 42
 
 
 # ------------------------------------------------------------------ 字体
@@ -87,15 +87,50 @@ FONT_CANDS = [
 # 指定字体：命令行 --font 会覆盖这里的候选列表
 FONT_OVERRIDE = None
 
+# 墨水屏只有黑白，抗锯齿的灰度最后必须二值化；13px 中文的细笔画在灰度里
+# 只有 40% 覆盖率，判定时整根丢掉——这就是"字不全 / 断笔"的来源。
+# 做法：直接用 FreeType 的单色（hinting 后）位图写字，横竖都落在像素格上。
+def binarize(img, threshold=128):
+    return img.point(lambda v: 255 if v > threshold else 0).convert("1")
 
-def load_font(size, bold=False):
+
+def paste_text(canvas, xy, text, font):
+    """用单色（hinted）位图写字，避免抗锯齿灰度在二值化时丢笔画。"""
+    try:
+        m = font.getmask(text, mode="1")
+        w, h = m.size
+        data = bytes(m)
+        if len(data) == w * h:
+            ink = Image.frombytes("L", (w, h), data)
+        else:
+            ink = Image.frombytes("1", (w, h), data).convert("L")
+        ink = Image.eval(ink, lambda v: 255 - v)
+        bb = font.getbbox(text)
+        canvas.paste(ink, (int(xy[0]) + bb[0], int(xy[1]) + bb[1]))
+    except Exception:
+        ImageDraw.Draw(canvas).text(xy, text, fill=0, font=font)
+
+
+def _font_cands(family_size, bold=False):
+    """按“排版用的字号”挑字体族；family_size 与绘制字号分开，
+    是为了超采样时 2 倍字号也仍然用同一个字体族。"""
+    if bold:
+        return ["C:/Windows/Fonts/msyhbd.ttc"] + FONT_CANDS
+    if family_size and family_size <= 18:
+        # 小字号优先黑体：笔画粗细均匀，二值化后最不容易断笔
+        # （13px 微软雅黑会把横画吃掉一半，屏上看着像"字不全"）
+        return ["C:/Windows/Fonts/simhei.ttf"] + FONT_CANDS
+    return FONT_CANDS
+
+
+def load_font(size, bold=False, family_size=None):
     if FONT_OVERRIDE:
         try:
             return ImageFont.truetype(FONT_OVERRIDE, size)
         except Exception as e:
             print("  字体加载失败（%s），回退到默认候选：%s" % (FONT_OVERRIDE, e))
-    cands = (["C:/Windows/Fonts/msyhbd.ttc"] if bold else []) + FONT_CANDS
-    for p in cands:
+    fam = size if family_size is None else family_size
+    for p in _font_cands(fam, bold):
         if os.path.exists(p):
             try:
                 return ImageFont.truetype(p, size)
@@ -123,24 +158,24 @@ def fit_font(model, lines, size=None, pad=12, line_k=1.4, max_size=72):
 
 def text_to_image(model, lines, size=None, bold=False, border=True, align="left",
                   pad=10):
-    img = Image.new("L", (model.w, model.h), 255)
-    d = ImageDraw.Draw(img)
     font, sz, lh = fit_font(model, lines, size=size, pad=pad)
+    img = Image.new("L", (model.w, model.h), 255)
     total = lh * len(lines)
     y = max(pad, (model.h - total) // 2)
     for ln in lines:
-        w = d.textlength(ln, font=font)
+        w = font.getlength(ln)
         if align == "center":
             x = max(2, int((model.w - w) / 2))
         elif align == "right":
             x = max(2, int(model.w - w - pad))
         else:
             x = pad
-        d.text((x, y), ln, fill=0, font=font)
+        paste_text(img, (x, y), ln, font)
         y += lh
     if border:
-        d.rectangle([0, 0, model.w - 1, model.h - 1], outline=0)
-    return img.point(lambda v: 255 if v > 127 else 0).convert("1")
+        ImageDraw.Draw(img).rectangle([0, 0, model.w - 1, model.h - 1], outline=0)
+    return binarize(img)
+
 
 
 def image_to_bitmap(model, img, dither=True, invert=False, fit=True, margin=2):
@@ -215,6 +250,13 @@ def wrap_text(text, font, max_w):
     return out
 
 
+# 小屏（2.9 寸 296x128）专用版式：边框贴屏幕边缘、页眉 13px、下划线紧跟页眉、
+# 不要页脚——省下来的高度全给正文，同样的 15px 字号能从 2 行变 5 行。
+SMALL_H = 160
+SMALL_PAD = 4
+SMALL_HDR_SZ = 13
+
+
 def layout(model, size=None, line_k=1.35, pad=12, header=None, footer=None,
            fill=True):
     """统一的版面计算，分页和渲染共用，避免两边算不一致。
@@ -223,33 +265,44 @@ def layout(model, size=None, line_k=1.35, pad=12, header=None, footer=None,
     屏高确定的条件下，字号越大每页字越少；为了让一页尽可能多放内容，
     从小到大试，取仍能满足目标行数的最大字号。
     """
+    small = model.h <= SMALL_H
+    if small:
+        pad = SMALL_PAD
+        footer = None                      # 小屏不要页脚，那 24px 留给正文
+    hdr_lh = max(10, int(round((SMALL_HDR_SZ if small else (size or 15)) * 1.25)))
+
     def metrics(sz):
-        f = load_font(sz)
+        f = load_font(sz, family_size=sz)
         lh = max(8, int(round(sz * line_k)))
+        hl = max(10, int(round((SMALL_HDR_SZ if small else sz) * 1.25)))
         y = pad
         if header:
-            y += lh + 4 + 6
+            y = pad + hl + 4              # 页眉行高 + 下划线及其间距
         bottom = model.h - pad - ((lh + 4) if footer else 0)
-        return f, lh, y, bottom
+        return f, lh, y, bottom, hl
 
     if size is None and fill:
-        # 字号下限 13px：低于这个值中文字形会糊成一团（2.9 寸屏踩过，
-        # 原来没有下限，小屏找不到 10 行就退化成 10px，整页糊掉）
+        # 字号下限 13px：低于这个值中文字形会糊成一团
         MIN_SZ = 13
-        # 目标行数跟着屏高走：300px(4.2寸)->10 行，128px(2.9寸)->4 行
-        target_rows = max(3, min(10, model.h // 30))
-        best = None
-        for sz in range(MIN_SZ, 40):
-            f, lh, y, bottom = metrics(sz)
-            if (bottom - y) // lh >= target_rows:
-                best = sz
-        size = best if best is not None else MIN_SZ
+        if small:
+            # 2.9 寸 296x128：实物对比过 13/15/16 三档，
+            # 13px 每页 3 行但复杂字会掉笔画，15px 笔画舒展 → 默认 15
+            size = 15
+        else:
+            # 大屏（4.2/4.26）目标行数跟着屏高走
+            target_rows = max(3, min(10, model.h // 30))
+            best = None
+            for sz in range(MIN_SZ, 40):
+                f, lh, y, bottom, _ = metrics(sz)
+                if (bottom - y) // lh >= target_rows:
+                    best = sz
+            size = best if best is not None else MIN_SZ
 
-    font, lh, body_y, bottom = metrics(size)
+    font, lh, body_y, bottom, hdr_lh = metrics(size)
     rows = max(1, (bottom - body_y) // lh)
     return {"font": font, "size": size, "lh": lh, "rows": rows,
             "max_w": model.w - 2 * pad, "body_y": body_y, "pad": pad,
-            "bottom": bottom}
+            "bottom": bottom, "hdr_lh": hdr_lh, "small": small}
 
 
 def paginate(model, text, size=None, line_k=1.35, pad=12, header=None, footer=None):
@@ -262,6 +315,8 @@ def paginate(model, text, size=None, line_k=1.35, pad=12, header=None, footer=No
     offset = 0
     for para in text.split("\n"):
         for ln in wrap_text(para + "\n", font, max_w):
+            if not ln.strip():
+                continue          # 空行不占版面：2.9 寸每页只有 5 行，浪费不起
             if len(buf) >= rows:
                 pages.append((offset, buf))
                 offset += sum(len(x) for x in buf)
@@ -274,26 +329,32 @@ def paginate(model, text, size=None, line_k=1.35, pad=12, header=None, footer=No
 
 def render_page(model, lines, L, header=None, footer=None):
     img = Image.new("L", (model.w, model.h), 255)
-    d = ImageDraw.Draw(img)
-    pad, lh, font = L["pad"], L["lh"], L["font"]
+    pad, lh = L["pad"], L["lh"]
+    font = load_font(L["size"], family_size=L["size"])
+    small = L.get("small", False)
 
     if header:
-        d.text((pad, max(2, pad - 4)), header, fill=0, font=font)
-        y_line = L["body_y"] - 5
-        d.line([pad, y_line, model.w - pad, y_line], fill=0)
+        hsz = SMALL_HDR_SZ if small else L["size"]
+        hfont = load_font(hsz, family_size=hsz) if hsz != L["size"] else font
+        paste_text(img, (pad, (pad - 2) if small else max(2, pad - 4)), header, hfont)
 
     y = L["body_y"]
     for ln in lines:
         if y + lh > L["bottom"] + 1:
             break
-        d.text((pad, y), ln, fill=0, font=font)
+        paste_text(img, (pad, y), ln, font)
         y += lh
 
-    if footer:
-        d.text((pad, model.h - pad - lh + 4), footer, fill=0, font=font)
+    if footer and not small:            # 小屏不显示页脚（百分比）
+        paste_text(img, (pad, model.h - pad - lh + 4), footer, font)
 
-    d.rectangle([0, 0, model.w - 1, model.h - 1], outline=0)
-    return img.point(lambda v: 255 if v > 127 else 0).convert("1")
+    d2 = ImageDraw.Draw(img)
+    if header:
+        uy = L["body_y"] - (3 if small else 5)     # 小屏下划线紧贴页眉
+        d2.line([pad, uy, model.w - 1 - pad if small else model.w - pad, uy], fill=0)
+    d2.rectangle([0, 0, model.w - 1, model.h - 1], outline=0)
+    return binarize(img)
+
 
 
 def book_pages(model, path, size, line_k, pad):
@@ -301,7 +362,7 @@ def book_pages(model, path, size, line_k, pad):
     size 传 None 表示按屏高自动定字号。"""
     cache = path + ".pages.json"
     # 改排版/清洗逻辑时把这个版本号 +1，旧缓存自动失效（否则会读到旧的错误排版）
-    CACHE_VER = 2
+    CACHE_VER = 6   # 6: 小屏版式（pad4/页眉13px/无页脚），旧分页结果作废
     key = "v%d|%s|%s|%d|%d|%d" % (CACHE_VER, model.key, size, int(line_k * 100), pad,
                                   os.path.getmtime(path))
     if os.path.exists(cache):
@@ -461,16 +522,15 @@ def main():
             sys.exit("页号超范围：这本书共 %d 页" % len(pages))
         p = pages[a.page - 1]
         L = layout(model, fitted, a.line_k, 12, header=hdr, footer=ftr)
-        pct = (p["line"] + len(p["lines"])) * 100 // max(1, total)
         img = render_page(model, p["lines"], L,
                           header=None if a.no_header else
                           "%s  p%d/%d" % (os.path.basename(a.book), a.page, len(pages)),
-                          footer=None if a.no_header else "%d%%" % pct)
+                          footer=None)          # 不再显示底部百分比，空间留给正文
         bw = image_to_bitmap(model, img, dither=False, invert=a.invert, fit=False)
         print("全书 %d 行 / %d 页，本页第 %d~%d 行，字号 %s，每页 %d 行"
               % (total, len(pages), p["line"] + 1, p["line"] + len(p["lines"]),
                  fitted, L["rows"]))
-        if L["rows"] < 6:
+        if L["rows"] < 2:
             print("  警告：这块屏每页只有 %d 行，读书体验很差（屏太矮）。"
                   "建议换 4.2 寸以上（--model 42）" % L["rows"])
     else:
