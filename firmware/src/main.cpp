@@ -288,6 +288,17 @@ static uint8_t g_lib_count = 0;
 static uint8_t g_lib_sel = 0;
 static uint8_t g_lib_top = 0;
 
+// 书名条是从阅读页页眉裁出来的，自带阅读页的 1px 外框；书库行里
+// 不能再带这圈线，否则每本书看起来都有黑色框线。
+static void strip_clear_border(uint8_t *strip) {
+    memset(strip, 0xFF, EPD_STRIDE);          // 顶部页边框
+    for (int r = 0; r < LIB_TITLE_H; r++) {
+        uint8_t *row = strip + r * EPD_STRIDE;
+        row[0] |= 0x80;                        // 左页边框
+        row[EPD_STRIDE - 1] |= 0x01;           // 右页边框
+    }
+}
+
 static void library_scan() {
     g_lib_count = 0;
     g_lib_sel = 0;
@@ -321,6 +332,7 @@ static void library_scan() {
                 }
                 if (bp.readPage(page, pagebuf)) {
                     memcpy(e.strip, pagebuf, sizeof(e.strip));
+                    strip_clear_border(e.strip);
                     Serial.printf("[lib] %s  p%lu/%lu\n", e.path,
                                   (unsigned long)(page + 1),
                                   (unsigned long)bp.pageCount());
@@ -384,7 +396,9 @@ static void library_draw(bool full) {
         if (idx >= g_lib_count) break;
         int16_t y = row_y + r * LIB_ROW_H;
         bool sel = (idx == g_lib_sel);
-        if (sel) epd.fill_rect(0, y, EPD_WIDTH, LIB_ROW_H, EPD_BLACK);
+        // 选中底色只覆盖书名位图条的同一 16px 区域，避免 24px 黑块
+        // 和 16px 位图条上下错位。
+        if (sel) epd.fill_rect(0, y + 4, EPD_WIDTH, LIB_TITLE_H, EPD_BLACK);
 
         const BookEntry &e = g_lib[idx];
         if (strip_has_ink(e.strip)) {
@@ -395,7 +409,6 @@ static void library_draw(bool full) {
             epd.draw_text(4, y + 6, fallback,
                           sel ? EPD_WHITE : EPD_BLACK, 1);
         }
-        if (!sel) epd.draw_hline(0, y + LIB_ROW_H - 1, EPD_WIDTH, EPD_BLACK);
     }
 
     if (g_lib_count == 0) {
