@@ -420,6 +420,9 @@ static void library_draw(bool full) {
     const char *foot = g_lib_count ? "OK=OPEN  POWER=SLEEP" : "UPLOAD VIA USB";
     epd.draw_text(4, 117, foot, EPD_BLACK, 1);
 
+    // 书名条是整行位图，会覆盖左右外框；最后补画一次外框，保证未选中行也不断线。
+    epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
+
     if (full) epd.display_full();
     else epd.display_partial_margin(0, 0, EPD_WIDTH, EPD_HEIGHT, 4);
 }
