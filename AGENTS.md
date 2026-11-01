@@ -7,7 +7,7 @@
 2.9 寸黑白墨水屏（296×128，SSD1680）× ESP32-S3：电脑渲染一页位图，串口推给设备显示。
 **已在实物上跑通**，不是纸上方案。
 
-## 当前状态（2026-10-27 实测）
+## 当前状态（2026-11-01 实测）
 
 | 项 | 值 |
 |---|---|
@@ -16,7 +16,7 @@
 | 显存 | 4736 字节，屏内 RAM 是**竖存 16 字节 × 296 行** |
 | 阅读版式 | 15px / **每页 5 行** / 页眉 13px / 无页脚 / pad 4 / 边框贴边 |
 | 样书页数 | `tools/sample_book.txt` = 8 页 |
-| 已验功能 | 中文文字、图片抖动、整本书分页、键盘翻页、局刷 |
+| 已验功能 | 中文文字、图片抖动、整本书分页、键盘翻页、局刷、4 键短按/长按/重复、内部 `.epg` 8 页阅读、20 页全刷循环、串口 `U` 传书、`M` 内存、`L` 文件列表、`D` 删除、EPUB→EPG、4 行书库/OK 选书、NVS 续读 |
 
 ## 硬性规则
 
@@ -63,11 +63,17 @@ cd ..
 |---|---|---|
 | 引脚、屏型、SPI 频率 | `firmware/src/board_config.h` | `PIN_EPD_*`、`EPD_MODEL` |
 | 屏驱动（初始化、刷屏、转置） | `firmware/src/epd.cpp` | `e29_init()`、`e29_show()`、`e29_build_mem()`、`e29_partial()` |
-| 开机流程、串口协议 | `firmware/src/main.cpp` | `setup()`、`read_full_frame()` |
+| 开机流程、串口协议 | `firmware/src/main.cpp` | `setup()`、`read_full_frame()`、`handle_key()` |
+| 按键扫描/消抖/长按/唤醒 | `firmware/src/keys.cpp` | `keys_scan()`、`keys_wait_all_released()`、`keys_wake_mask()` |
+| `.epg` 页包解析 | `firmware/src/book_pack.cpp` | `BookPack::open()`、`readPage()`、`unpack()` |
+| 生成页包 | `tools/pack.py` | `build()`、`packbits()`、`epub_to_text()` |
+| 串口传书 | `tools/upload.py` | `U|/books/name|size|crc` 协议 |
+| 删除文件 | `tools/delete.py` | `D|/books/name` |
+| 查询内存/文件 | `tools/status.py` | 发送 `M` / `L` |
 | 版面（字号、行数、边距） | `tools/push.py` | `layout()`、`SMALL_H/SMALL_PAD/SMALL_HDR_SZ` |
 | 页眉、下划线、正文绘制 | `tools/push.py` | `render_page()` |
 | 分页、空行处理 | `tools/push.py` | `paginate()`、`wrap_text()` |
-| 字体选择（小字号用黑体）、单色 hinting | `tools/push.py` | `_font_cands()`、`paste_text()` |
+| 字体选择（默认宋体）、单色 hinting | `tools/push.py` | `_font_cands()`、`paste_text()` |
 | 串口打包 / CRC / 握手 | `tools/push.py` | `send_frame()`、`wait_ready()` |
 | 键盘翻页 | `tools/read.py` | `render()`、`get_key()` |
 | 固件内 5×7 字库 | `firmware/include/font_ascii.h` | 由 `tools/genfont.py` 生成 |
@@ -79,9 +85,10 @@ cd ..
 | 全刷几毫秒、屏不动 | 初始化缺 `0x12/0x11/0x44/0x45/0x21/0x4E/0x4F`，窗口是 0×0 | 见 `e29_init()`，一条不能少 |
 | 耗时正常但屏不变 | 显存几何反了（屏是竖存 16×296，不是 37×128） | `e29_build_mem()` |
 | 局刷后画面乱 | 全刷没同时写 `0x26`（旧图），局刷拿垃圾做差分 | `e29_show()` 里 `0x24` + `0x26` 都写 |
+| 第 20 页全刷时整机卡死 | 全刷前 `e29_init()` 重入 `SPI.begin()` / `beginTransaction()`，总线已持有 → 死锁 | SPI 只在第一次 init；重 init 只复位屏和发命令 |
 | 推完图又变回首页 | 串口 DTR/RTS 把板子复位了 | `push.py` 已处理：放线 + 等 `READY.` |
 | 只有 `[ep29] refresh` 没 `OK frame` | 读到的是开机日志，不是帧回复 | 读到 `OK`/`NAK` 才算成功 |
-| 中文笔画断裂 | 抗锯齿灰度被阈值吃掉细笔画 | 单色 hinting（`paste_text`）+ 15px + 小字号用黑体 |
+| 中文笔画断裂 | 抗锯齿灰度被阈值吃掉细笔画 | 单色 hinting（`paste_text`）+ 15px + 默认宋体；断笔时用 `--font` 临时换黑体 |
 | 首行偏下、少显示几行 | 空行也占了一行版面 | `paginate()` 跳过空行 |
 | `ERR len=15000 expect=4736` | `--model` 和固件不一致 | `--model 29`（现在默认就是） |
 

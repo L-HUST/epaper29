@@ -108,6 +108,8 @@
 
   #define PIN_KEY_PREV 4
   #define PIN_KEY_NEXT 5
+  #define PIN_KEY_OK   6
+  #define PIN_KEY_POWER 15
 
   // microSD 与墨水屏共用 SCK/MOSI（屏只写不读，不会抢 MISO），只多 2 根线
   #define PIN_SD_CS    13
@@ -138,6 +140,8 @@
 
   #define PIN_KEY_PREV 6
   #define PIN_KEY_NEXT 10
+  #define PIN_KEY_OK   -1      // C3 没有多余 GPIO
+  #define PIN_KEY_POWER -1     // C3 没有多余 GPIO
 
   // 注意：GPIO9 在 C3 SuperMini 上是 BOOT 键，接 MISO 时不要按着那个键上电
   #define PIN_SD_CS    8

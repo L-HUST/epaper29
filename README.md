@@ -20,6 +20,7 @@
 1. **推文字**：Windows 上 `.\push.ps1 "第一行|第二行|第三行|第四行"`，屏上立刻换页
 2. **推图片**：任意 jpg/png，自动抖动成黑白
 3. **整本书按页翻**：`.\push.ps1 -Book novel.txt -Page 3`
+4. **设备内阅读（v1 demo）**：`tools/pack.py` 生成 `.epg`，传到内部 LittleFS 的 `/books`；有上次进度就直接回上次的书和页，没有进度进书库。阅读页 PREV/NEXT 翻页，每 20 页全刷一次，POWER 短按回书库，长按休眠。当前两本书，demo 8 页。
 
 中文不用固件字库——**排版全在电脑上做**，固件只收 4736 字节位图。所以换字体、加粗、居中都不用重烧固件。
 
@@ -84,7 +85,12 @@ READY.
 | 推 txt（每行一行） | `.\push.ps1 -File notes.txt` |
 | 推图片 | `.\push.ps1 -Image D:\photo.jpg` |
 | 整本书翻页 | `.\push.ps1 -Book novel.txt -Page 3` |
-| 指定字体 | `.\push.ps1 "文字" -Font C:\Windows\Fonts\simhei.ttf` |
+| 生成页包 | `python tools\pack.py --book novel.txt --title "书名" --out novel.epg` |
+| 生成页包（EPUB） | `python tools\pack.py --book novel.epub --out novel.epg` |
+| 串口传页包 | `python tools\upload.py --file novel.epg --port COM4` |
+| 删除设备文件 | `python tools\delete.py --name test.epg --port COM4` |
+| 查内存/文件 | `python tools\status.py --port COM4` |
+| 指定字体 | `.\push.ps1 "文字" -Font C:\Windows\Fonts\simsun.ttc` |
 
 三个必知：
 
@@ -100,7 +106,7 @@ READY.
 ├─ push.ps1               推文字/图片/书（串口号自动识别）
 ├─ firmware/
 │  ├─ platformio.ini      5 个环境：c3 / c3-29 / s3 / s3-29 / s3-426
-│  ├─ partitions_16mb.csv S3 用：4MB 固件 + 11.9MB 存书
+│  ├─ partitions_16mb.csv S3 用：2.5MB app0 + 2.5MB app1(OTA) + 10.875MB 存书
 │  ├─ include/font_ascii.h 固件内 5×7 ASCII 字库
 │  └─ src/
 │     ├─ board_config.h   ← 换屏/换板/换引脚只改这里
@@ -108,6 +114,10 @@ READY.
 │     └─ main.cpp         串口协议 + 首页 + 休眠
 ├─ tools/
 │  ├─ push.py             文字/图片/整本书 → 位图 → 串口
+│  ├─ pack.py             txt / EPUB → .epg 页包（默认 RLE 压缩 + 宋体）
+│  ├─ upload.py           串口上传 .epg 到 /books
+│  ├─ delete.py           删除 /books 下的 .epg
+│  ├─ status.py           查询内存 / PSRAM / 文件列表
 │  ├─ read.py             键盘翻页（n/p/f/s/q）
 │  ├─ genfont.py          重新生成固件字库
 │  ├─ cap_serial.py       抓开机日志（板子一插就复位，用它）
@@ -152,12 +162,22 @@ READY.
 | 中文文字 电脑→屏 | ✅ 回 `OK frame` |
 | 图片抖动 / 整本书分页 | ✅ 本机跑通 |
 | 4.2 / 4.26 寸实物 | ❌ 没硬件 |
-| 按键 / SD / 蓝牙 / 电池 | ❌ 只有方案 |
+| 4 键输入 | ✅ 2026-11-01：短按 / 长按 / 重复、KEY TEST 页 |
+| 按键唤醒 / 深睡 | ⏳ 固件已实现，待实物验证 |
+| 内部 `.epg` 阅读（demo 8 页） | ✅ 2026-11-01：启动读第 1 页，NEXT/PREV 翻到 8/8 |
+| 20 页全刷循环 | ✅ 2026-11-01：第 20 次翻页全刷后继续翻，不卡死 |
+| 串口传书 + 内存/文件查询 | ✅ 2026-11-01：`U` 上传 CRC 校验，`M` / `L` 查询，`D` 删除 |
+| 多书库 / 选书 UI | ✅ 2026-11-01：4 行书库、中文书名位图（取该书当前页页眉）、OK 选书、POWER 回库 |
+| 记住每本书页码 | ✅ 2026-11-01：NVS 按书保存；回书库再打开、重启/唤醒都从该书的页码继续 |
+| SD / 蓝牙 / 电池 | ❌ 只有方案 |
 
 ## 文档
 
 - [docs/00-完全手册.md](docs/00-完全手册.md) —— 唯一详版：采购、接线、原理、扩展、踩坑记录
   （第 12 章 电源/省电/残影/排查顺序，第 13 章 使用与原理速查：文件分工、翻页方式、烧写机制、WiFi/BLE）
+- [docs/10-架构与接口.md](docs/10-架构与接口.md) —— v1 架构、接口、`.epg` 格式、分区与兼容性契约
+- [docs/11-硬件与采购.md](docs/11-硬件与采购.md) —— v1/v2 采购清单、按键接线、SD/电池物料
+- [docs/12-UI草案.md](docs/12-UI草案.md) —— 2.9 寸六屏 UI 草图与交互说明
 - [docs/archive/90-4.2寸方案.md](docs/archive/90-4.2寸方案.md) —— 早期 4.2 寸产品化方案，**归档，非主线**
 
 ## 许可

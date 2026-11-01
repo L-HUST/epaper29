@@ -13,6 +13,9 @@
 #include "font_ascii.h"
 #include <SPI.h>
 
+// 屏在忙时（全刷 2 秒多）仍要能扫按键；由 main 注册，回调只做扫描/入队。
+static EpdBusyHook s_busy_hook = nullptr;
+
 // 分辨率/波形/VCOM 等型号相关参数全部来自 board_config.h
 static_assert(EPD_WIDTH % 8 == 0, "屏宽必须是 8 的整数倍，否则显存行宽对不齐");
 // 显存 = EPD_BYTES（4.2 寸 15000 字节，4.26 寸 48000 字节），
@@ -97,6 +100,10 @@ EPD::EPD(int8_t pin_cs, int8_t pin_dc, int8_t pin_rst, int8_t pin_busy,
     memset(_buf, 0xFF, sizeof(_buf));   // 1 = 白
 }
 
+void EPD::set_busy_hook(EpdBusyHook hook) {
+    s_busy_hook = hook;
+}
+
 #if EPD_BOOSTER_3B
 // ============================================================================
 // 2.9 寸专用：命令序列与波形表逐字取自卖家例程
@@ -143,6 +150,7 @@ static void e29_data(uint8_t d) {
 static void e29_wait_busy(uint32_t timeout_ms) {
     uint32_t t0 = millis();
     while (digitalRead(PIN_EPD_BUSY) == HIGH) {     // 高 = 忙（SSD1680）
+        if (s_busy_hook) s_busy_hook();
         if (millis() - t0 > timeout_ms) {
             Serial.printf("[ep29] BUSY 超时 %lums\n", (unsigned long)timeout_ms);
             return;
@@ -151,6 +159,8 @@ static void e29_wait_busy(uint32_t timeout_ms) {
     }
 }
 
+static bool s_e29_spi_ready = false;
+
 static void e29_init(void) {
     pinMode(PIN_EPD_CS, OUTPUT);
     pinMode(PIN_EPD_DC, OUTPUT);
@@ -158,8 +168,14 @@ static void e29_init(void) {
     pinMode(PIN_EPD_BUSY, INPUT);
     digitalWrite(PIN_EPD_CS, HIGH);
     digitalWrite(PIN_EPD_DC, HIGH);
-    SPI.begin(PIN_EPD_SCK, -1, PIN_EPD_MOSI, -1);
-    SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+
+    // SPI.begin/beginTransaction 只能做一次：全刷前重新 init 时再调用
+    // 会在已持有总线的情况下重入，表现为卡死（20 页全刷那一页）。
+    if (!s_e29_spi_ready) {
+        SPI.begin(PIN_EPD_SCK, -1, PIN_EPD_MOSI, -1);
+        SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+        s_e29_spi_ready = true;
+    }
 
     // 复位时序照官方：高 10ms / 低 2ms / 高 10ms，再等 100ms
     digitalWrite(PIN_EPD_RST, HIGH); delay(10);
@@ -351,6 +367,7 @@ void EPD::reset() {
 void EPD::wait_busy(const char *what, uint32_t timeout_ms) {
     uint32_t t0 = millis();
     while (digitalRead(_busy) == HIGH) {      // HIGH = 忙
+        if (s_busy_hook) s_busy_hook();
         if (millis() - t0 > timeout_ms) {
             Serial.printf("[epd] BUSY 超时 @%s (>%lums)\n", what,
                           (unsigned long)timeout_ms);
@@ -611,11 +628,12 @@ void EPD::display_partial_margin(int16_t x, int16_t y, int16_t w, int16_t h,
 }
 
 void EPD::sleep() {
+#if EPD_BOOSTER_3B
+    cmd(0x10); data(0x01);      // SSD1680 深睡（保留 RAM）
+#else
     cmd(C_POWER_OFF);
     wait_busy("power_off(sleep)", 5000);
-    cmd(C_DEEP_SLEEP);
-    data(0x01);                              // 保留 RAM 的深睡眠
-    delay(100);
+    cmd(C_DEEP_SLEEP); data(0x01);
+#endif
     _asleep = true;
-    Serial.println("[epd] deep sleep");
 }

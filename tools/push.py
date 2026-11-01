@@ -39,6 +39,7 @@ import struct
 import sys
 import time
 import zlib
+from functools import lru_cache
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -72,10 +73,12 @@ DEFAULT_MODEL = "29"      # 本项目主线是 2.9 寸；换屏加 --model 42
 
 
 # ------------------------------------------------------------------ 字体
+# 默认宋体（用户指定）。想换字体用 --font 覆盖，或改这个候选表。
 FONT_CANDS = [
-    "C:/Windows/Fonts/msyh.ttc",           # 微软雅黑（中文）
+    "C:/Windows/Fonts/simsun.ttc",         # 宋体（默认）
+    "C:/Windows/Fonts/simsunb.ttf",        # 宋体粗
+    "C:/Windows/Fonts/msyh.ttc",           # 微软雅黑
     "C:/Windows/Fonts/simhei.ttf",         # 黑体
-    "C:/Windows/Fonts/simsun.ttc",         # 宋体
     "C:/Windows/Fonts/msyhbd.ttc",
     "C:/Windows/Fonts/arial.ttf",
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
@@ -115,25 +118,27 @@ def _font_cands(family_size, bold=False):
     """按“排版用的字号”挑字体族；family_size 与绘制字号分开，
     是为了超采样时 2 倍字号也仍然用同一个字体族。"""
     if bold:
-        return ["C:/Windows/Fonts/msyhbd.ttc"] + FONT_CANDS
-    if family_size and family_size <= 18:
-        # 小字号优先黑体：笔画粗细均匀，二值化后最不容易断笔
-        # （13px 微软雅黑会把横画吃掉一半，屏上看着像"字不全"）
-        return ["C:/Windows/Fonts/simhei.ttf"] + FONT_CANDS
+        return ["C:/Windows/Fonts/simsunb.ttf"] + FONT_CANDS
     return FONT_CANDS
+
+
+@lru_cache(maxsize=32)
+def _load_font_file(path, size):
+    """字体文件只加载一次；整本书几千页时这是最大的提速点。"""
+    return ImageFont.truetype(path, size)
 
 
 def load_font(size, bold=False, family_size=None):
     if FONT_OVERRIDE:
         try:
-            return ImageFont.truetype(FONT_OVERRIDE, size)
+            return _load_font_file(FONT_OVERRIDE, size)
         except Exception as e:
             print("  字体加载失败（%s），回退到默认候选：%s" % (FONT_OVERRIDE, e))
     fam = size if family_size is None else family_size
     for p in _font_cands(fam, bold):
         if os.path.exists(p):
             try:
-                return ImageFont.truetype(p, size)
+                return _load_font_file(p, size)
             except Exception:
                 pass
     return ImageFont.load_default()
@@ -180,19 +185,33 @@ def text_to_image(model, lines, size=None, bold=False, border=True, align="left"
 
 def image_to_bitmap(model, img, dither=True, invert=False, fit=True, margin=2):
     """PIL 图 -> 字节串（1=白 0=黑）"""
-    img = img.convert("L")
-    if fit and img.size != (model.w, model.h):
-        k = min((model.w - 2 * margin) / float(img.width),
-                (model.h - 2 * margin) / float(img.height))
-        nw, nh = max(1, int(img.width * k)), max(1, int(img.height * k))
-        small = img.resize((nw, nh), Image.LANCZOS)
-        canvas = Image.new("L", (model.w, model.h), 255)
-        canvas.paste(small, ((model.w - nw) // 2, (model.h - nh) // 2))
-        img = canvas
-    # 不用 Image.Dither 枚举：老版本 Pillow(<9.1) 没有，直接用整型常量
-    bw = img.convert("1", dither=1 if dither else 0)
+    if fit:
+        img = img.convert("L")
+        if img.size != (model.w, model.h):
+            k = min((model.w - 2 * margin) / float(img.width),
+                    (model.h - 2 * margin) / float(img.height))
+            nw, nh = max(1, int(img.width * k)), max(1, int(img.height * k))
+            small = img.resize((nw, nh), Image.LANCZOS)
+            canvas = Image.new("L", (model.w, model.h), 255)
+            canvas.paste(small, ((model.w - nw) // 2, (model.h - nh) // 2))
+            img = canvas
+
+    # render_page() 已经是 1-bit；不要再 L -> 1 来回转一次。
+    if img.mode == "1":
+        bw = img
+    else:
+        img = img.convert("L")
+        # 不用 Image.Dither 枚举：老版本 Pillow(<9.1) 没有，直接用整型常量
+        bw = img.convert("1", dither=1 if dither else 0)
     if invert:
         bw = bw.point(lambda v: 0 if v else 255).convert("1")
+
+    # 296/400/800 都是 8 的倍数，PIL 的 1-bit tobytes() 正好就是
+    # 我们需要的“每行 stride 字节、MSB 在左、1=白”格式；直接用它，
+    # 比逐像素 Python 循环快一个数量级。
+    raw = bw.tobytes()
+    if len(raw) == model.frame_len:
+        return bytes(raw)
 
     px = bw.load()
     out = bytearray()
@@ -228,6 +247,7 @@ def wrap_text(text, font, max_w):
             out.append("")
             continue
         line = ""
+        line_w = 0
         i = 0
         while i < len(para):
             ch = para[i]
@@ -240,11 +260,14 @@ def wrap_text(text, font, max_w):
             else:
                 token = ch
                 j = i + 1
-            if font.getlength(line + token) <= max_w or not line:
+            token_w = font.getlength(token)
+            if line_w + token_w <= max_w or not line:
                 line += token
+                line_w += token_w
             else:
                 out.append(line)
                 line = token.lstrip()
+                line_w = font.getlength(line)
             i = j
         out.append(line)
     return out
@@ -357,12 +380,25 @@ def render_page(model, lines, L, header=None, footer=None):
 
 
 
+def read_text_auto(path):
+    """优先 UTF-8（含 BOM），失败再试 GB18030——Windows 记事本另存的中文 txt
+    经常是 GBK，直接按 UTF-8 读会满屏问号。"""
+    for enc in ("utf-8-sig", "gb18030", "utf-16"):
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return f.read()
+        except (UnicodeDecodeError, UnicodeError):
+            pass
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+        return f.read()
+
+
 def book_pages(model, path, size, line_k, pad):
     """带缓存的分页：第一次跑要排版整本书，之后读 json 缓存。
     size 传 None 表示按屏高自动定字号。"""
     cache = path + ".pages.json"
     # 改排版/清洗逻辑时把这个版本号 +1，旧缓存自动失效（否则会读到旧的错误排版）
-    CACHE_VER = 6   # 6: 小屏版式（pad4/页眉13px/无页脚），旧分页结果作废
+    CACHE_VER = 9   # 9: 折行改为增量宽度计算，旧分页缓存作废
     key = "v%d|%s|%s|%d|%d|%d" % (CACHE_VER, model.key, size, int(line_k * 100), pad,
                                   os.path.getmtime(path))
     if os.path.exists(cache):
@@ -376,8 +412,7 @@ def book_pages(model, path, size, line_k, pad):
 
     # utf-8-sig：自动吃掉 BOM。Windows 记事本/很多下载站的书都带 BOM，
     # 用 utf-8 读会把 U+FEFF 当成正文第一个字符，渲染成黑方块（每本书第一页都有）
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        text = f.read()
+    text = read_text_auto(path)
     text = text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
     # 分页时按"有页眉页脚"的最坏情况算行数，实际渲染也一致，避免两边错位
     pages, L = paginate(model, text, size, line_k, pad, header="H", footer="F")

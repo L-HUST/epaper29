@@ -26,6 +26,8 @@
 #define EPD_BLACK 0
 #define EPD_WHITE 1u
 
+using EpdBusyHook = void (*)();
+
 // 旧名字，兼容早期代码/文档
 #define EPD_W EPD_WIDTH
 #define EPD_H EPD_HEIGHT
@@ -38,6 +40,9 @@ public:
 
     // 上电初始化；会把型号、BUSY 电平打到串口便于排查
     void begin();
+
+    // BUSY 等待期间的回调（用于扫按键，避免全刷 2 秒丢键）
+    void set_busy_hook(EpdBusyHook hook);
 
     // ---- 画图（只动内存）----
     void clear(uint8_t color = EPD_WHITE);
