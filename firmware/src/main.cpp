@@ -38,6 +38,18 @@ static uint32_t g_since_full = 0;
 static bool g_home = true;       // 当前显示的是首页还是阅读页
 static bool s_fs_ready = false;  // LittleFS 只挂一次
 
+// ---------------- M5 UI / settings ----------------
+static bool g_menu = false;
+static uint8_t g_menu_sel = 0;
+static bool g_settings = false;
+static uint8_t g_settings_sel = 0;
+static bool g_goto = false;
+static uint8_t g_goto_digits[6] = {0};
+static uint8_t g_goto_len = 4;
+static uint8_t g_goto_pos = 3;
+static uint8_t g_refresh_every = 20;
+static uint32_t g_sleep_after_ms = 0;  // 0 = 关闭
+
 // RTC 内存：深睡眠不丢，用来区分“冷启动”和“定时唤醒”
 RTC_DATA_ATTR static uint32_t boot_count = 0;
 
@@ -100,10 +112,42 @@ static bool load_book_progress(const char *path, uint32_t &page, uint32_t &size)
 static void save_progress();
 static void clear_progress();
 static bool resume_progress();
+static void menu_open();
+static void menu_draw(bool full);
+static void goto_init();
+static void goto_draw(bool full);
+static void settings_draw(bool full);
+static void settings_load();
+static void settings_save();
 
 static void home(bool full) {
     // M4-3：首页就是书库；具体绘制在 library_draw() 里。
     library_draw(full);
+}
+
+static uint8_t digits_for(uint32_t n) {
+    uint8_t d = 1;
+    while (n >= 10 && d < 9) { n /= 10; d++; }
+    return d;
+}
+
+static void settings_load() {
+    Preferences p;
+    if (!p.begin("settings", true)) return;
+    uint8_t r = (uint8_t)p.getUInt("refresh", 20);
+    uint8_t s = (uint8_t)p.getUInt("sleep", 0);
+    p.end();
+    g_refresh_every = (r == 10 || r == 20 || r == 30) ? r : 20;
+    if (s != 0 && s != 1 && s != 5 && s != 10) s = 0;
+    g_sleep_after_ms = (uint32_t)s * 60000UL;
+}
+
+static void settings_save() {
+    Preferences p;
+    if (!p.begin("settings", false)) return;
+    p.putUInt("refresh", g_refresh_every);
+    p.putUInt("sleep", g_sleep_after_ms / 60000UL);
+    p.end();
 }
 
 // ---------------- 串口收图 ----------------
@@ -179,12 +223,11 @@ static void sleep_screen() {
     epd.draw_text(20, 215, "Press any key to wake", EPD_BLACK, 2);
 #endif
 #else
-    epd.draw_text(10, 8, "SLEEP", EPD_BLACK, 3);
+    epd.draw_cjk_text(10, 8, "休眠", EPD_BLACK, 15);
     epd.draw_text(224, 8, "z z z", EPD_BLACK, 2);
     epd.draw_hline(10, 36, EPD_WIDTH - 20, EPD_BLACK);
-    epd.draw_text(88, 50, "DEEP SLEEP", EPD_BLACK, 2);
-    epd.draw_text(109, 82, "Press any key", EPD_BLACK, 1);
-    epd.draw_text(127, 96, "to wake", EPD_BLACK, 1);
+    epd.draw_cjk_text(118, 50, "深度休眠", EPD_BLACK, 15);
+    epd.draw_cjk_text(112, 82, "按任意键唤醒", EPD_BLACK, 12);
 #endif
 
     epd.display_full();
@@ -382,12 +425,12 @@ static bool strip_has_ink(const uint8_t *strip) {
 static void library_draw(bool full) {
     epd.clear(EPD_WHITE);
     epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
-    epd.draw_text(4, 3, "LIBRARY", EPD_BLACK, 1);
+    epd.draw_cjk_text(4, 2, "书库", EPD_BLACK, 15);
 
     char count[24];
-    snprintf(count, sizeof(count), "%u BOOKS", g_lib_count);
-    epd.draw_text(EPD_WIDTH - epd.text_width(count, 1) - 4, 3,
-                  count, EPD_BLACK, 1);
+    snprintf(count, sizeof(count), "%u 本", g_lib_count);
+    epd.draw_cjk_text(EPD_WIDTH - epd.cjk_text_width(count, 12) - 4, 4,
+                      count, EPD_BLACK, 12);
     epd.draw_hline(0, 18, EPD_WIDTH, EPD_BLACK);
 
     const int16_t row_y = 20;
@@ -405,20 +448,20 @@ static void library_draw(bool full) {
             draw_strip(y + 4, e.strip, sel);
         } else {
             char fallback[24];
-            snprintf(fallback, sizeof(fallback), "BOOK %u", (unsigned)(idx + 1));
-            epd.draw_text(4, y + 6, fallback,
-                          sel ? EPD_WHITE : EPD_BLACK, 1);
+            snprintf(fallback, sizeof(fallback), "书 %u", (unsigned)(idx + 1));
+            epd.draw_cjk_text(4, y + 5, fallback,
+                             sel ? EPD_WHITE : EPD_BLACK, 15);
         }
     }
 
     if (g_lib_count == 0) {
-        epd.draw_text(12, 48, "NO BOOKS", EPD_BLACK, 2);
-        epd.draw_text(12, 78, "UPLOAD .EPG", EPD_BLACK, 1);
+        epd.draw_cjk_text(12, 48, "没有书", EPD_BLACK, 15);
+        epd.draw_cjk_text(12, 78, "请用数据线传书", EPD_BLACK, 12);
     }
 
     epd.draw_hline(0, 114, EPD_WIDTH, EPD_BLACK);
-    const char *foot = g_lib_count ? "OK=OPEN  POWER=SLEEP" : "UPLOAD VIA USB";
-    epd.draw_text(4, 117, foot, EPD_BLACK, 1);
+    const char *foot = g_lib_count ? "确定=打开  电源=休眠" : "请用数据线传书";
+    epd.draw_cjk_text(4, 116, foot, EPD_BLACK, 12);
 
     // 书名条是整行位图，会覆盖左右外框；最后补画一次外框，保证未选中行也不断线。
     epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
@@ -751,7 +794,7 @@ static bool show_page(bool full) {
         g_since_full = 0;
     } else {
         // 第 20 页直接全刷，避免"先局刷再全刷"闪两次
-        if (++g_since_full >= 20) {
+        if (++g_since_full >= g_refresh_every) {
             epd.display_full();
             g_since_full = 0;
         } else {
@@ -768,6 +811,7 @@ static bool show_page(bool full) {
 
 static bool library_open_selected() {
     if (g_lib_sel >= g_lib_count) return false;
+    g_menu = g_settings = g_goto = false;
     if (!g_book.open(LittleFS, g_lib[g_lib_sel].path)) {
         Serial.printf("[lib] open failed: %s\n", g_lib[g_lib_sel].path);
         return false;
@@ -822,6 +866,269 @@ static bool resume_progress() {
     return true;
 }
 
+static const char *MENU_ITEMS[] = {
+    "阅读设置", "跳转页面", "全刷", "返回书库",
+};
+static const uint8_t MENU_COUNT = 4;
+
+static void menu_open() {
+    g_menu = true;
+    g_menu_sel = 0;
+    g_settings = false;
+    g_goto = false;
+    Serial.println("[ui] menu");
+    menu_draw(true);
+}
+
+static void menu_draw(bool full) {
+    epd.clear(EPD_WHITE);
+    epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
+    epd.draw_cjk_text(4, 2, "菜单", EPD_BLACK, 15);
+
+    char page[40];
+    snprintf(page, sizeof(page), "第 %lu/%lu 页",
+             (unsigned long)(g_page + 1),
+             (unsigned long)g_book.pageCount());
+    epd.draw_cjk_text(EPD_WIDTH - epd.cjk_text_width(page, 12) - 4, 4,
+                      page, EPD_BLACK, 12);
+    epd.draw_hline(0, 18, EPD_WIDTH, EPD_BLACK);
+
+    for (uint8_t i = 0; i < MENU_COUNT; i++) {
+        int16_t y = 20 + i * 24;
+        bool sel = (i == g_menu_sel);
+        if (sel) epd.fill_rect(0, y + 2, EPD_WIDTH, 20, EPD_BLACK);
+        epd.draw_cjk_text(6, y + 4, MENU_ITEMS[i],
+                         sel ? EPD_WHITE : EPD_BLACK, 15);
+    }
+
+    epd.draw_hline(0, 114, EPD_WIDTH, EPD_BLACK);
+    epd.draw_cjk_text(4, 116, "确定=选择  电源=返回", EPD_BLACK, 12);
+    epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
+
+    if (full) epd.display_full();
+    else epd.display_partial_margin(0, 0, EPD_WIDTH, EPD_HEIGHT, 4);
+}
+
+static uint32_t goto_value() {
+    uint32_t v = 0;
+    for (uint8_t i = 0; i < g_goto_len; i++) v = v * 10 + g_goto_digits[i];
+    return v;
+}
+
+static void goto_draw(bool full) {
+    epd.clear(EPD_WHITE);
+    epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
+    epd.draw_cjk_text(4, 2, "跳转页面", EPD_BLACK, 15);
+
+    char total[40];
+    snprintf(total, sizeof(total), "共 %lu 页",
+             (unsigned long)g_book.pageCount());
+    epd.draw_cjk_text(EPD_WIDTH - epd.cjk_text_width(total, 12) - 4, 4,
+                      total, EPD_BLACK, 12);
+    epd.draw_hline(0, 18, EPD_WIDTH, EPD_BLACK);
+
+    const int16_t cell = 24;
+    int16_t x0 = (EPD_WIDTH - g_goto_len * cell + 4) / 2;
+    for (uint8_t i = 0; i < g_goto_len; i++) {
+        int16_t x = x0 + i * cell;
+        bool active = (i == g_goto_pos);
+        if (active) {
+            epd.fill_rect(x - 2, 27, 24, 34, EPD_BLACK);
+        }
+        epd.draw_char(x, 30, (char)('0' + g_goto_digits[i]),
+                      active ? EPD_WHITE : EPD_BLACK, 4);
+    }
+
+    char cur[40];
+    snprintf(cur, sizeof(cur), "当前 %lu / %lu",
+             (unsigned long)(g_page + 1),
+             (unsigned long)g_book.pageCount());
+    epd.draw_cjk_text(4, 64, cur, EPD_BLACK, 12);
+    epd.draw_cjk_text(4, 80, "上下=改数字  确定=换位", EPD_BLACK, 12);
+    epd.draw_cjk_text(4, 96, "长按确定=跳转", EPD_BLACK, 12);
+
+    epd.draw_hline(0, 114, EPD_WIDTH, EPD_BLACK);
+    epd.draw_cjk_text(4, 116, "电源=取消", EPD_BLACK, 12);
+    epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
+
+    if (full) epd.display_full();
+    else epd.display_partial_margin(0, 0, EPD_WIDTH, EPD_HEIGHT, 4);
+}
+
+static void goto_init() {
+    g_goto = true;
+    g_goto_len = digits_for(g_book.pageCount());
+    if (g_goto_len > 6) g_goto_len = 6;
+    uint32_t target = g_page + 1;
+    if (target > g_book.pageCount()) target = g_book.pageCount();
+    for (int i = (int)g_goto_len - 1; i >= 0; i--) {
+        g_goto_digits[i] = target % 10;
+        target /= 10;
+    }
+    g_goto_pos = g_goto_len - 1;
+    Serial.printf("[ui] goto len=%u target=%lu\n", g_goto_len,
+                  (unsigned long)(g_page + 1));
+}
+
+static void settings_draw(bool full) {
+    epd.clear(EPD_WHITE);
+    epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
+    epd.draw_cjk_text(4, 2, "阅读设置", EPD_BLACK, 15);
+    epd.draw_hline(0, 18, EPD_WIDTH, EPD_BLACK);
+
+    const char *labels[3] = {"刷新间隔", "休眠时间", "返回"};
+    char value0[24], value1[24];
+    snprintf(value0, sizeof(value0), "%u 页", g_refresh_every);
+    uint32_t mins = g_sleep_after_ms / 60000UL;
+    if (mins == 0) snprintf(value1, sizeof(value1), "关闭");
+    else snprintf(value1, sizeof(value1), "%lu 分钟", (unsigned long)mins);
+
+    for (uint8_t i = 0; i < 3; i++) {
+        int16_t y = 20 + i * 24;
+        bool sel = (i == g_settings_sel);
+        if (sel) epd.fill_rect(0, y + 2, EPD_WIDTH, 20, EPD_BLACK);
+        epd.draw_cjk_text(6, y + 4, labels[i],
+                         sel ? EPD_WHITE : EPD_BLACK, 15);
+        if (i == 0 || i == 1) {
+            const char *v = (i == 0) ? value0 : value1;
+            epd.draw_cjk_text(EPD_WIDTH - epd.cjk_text_width(v, 12) - 6,
+                              y + 6, v, sel ? EPD_WHITE : EPD_BLACK, 12);
+        }
+    }
+
+    epd.draw_hline(0, 114, EPD_WIDTH, EPD_BLACK);
+    epd.draw_cjk_text(4, 116, "确定=修改  电源=返回", EPD_BLACK, 12);
+    epd.draw_rect(0, 0, EPD_WIDTH, EPD_HEIGHT, EPD_BLACK);
+
+    if (full) epd.display_full();
+    else epd.display_partial_margin(0, 0, EPD_WIDTH, EPD_HEIGHT, 4);
+}
+
+static void handle_goto_key(const KeyEvent &e) {
+    if (e.type == KEY_EV_DOWN || e.type == KEY_EV_UP) return;
+    if (e.id == KEY_POWER && e.type == KEY_EV_LONG) {
+        go_sleep();
+        return;
+    }
+    if (e.id == KEY_POWER && e.type == KEY_EV_SHORT) {
+        g_goto = false;
+        g_menu = true;
+        g_menu_sel = 1;
+        menu_draw(true);
+        return;
+    }
+    if (e.type == KEY_EV_REPEAT) return;
+
+    if (e.type == KEY_EV_LONG && e.id == KEY_OK) {
+        uint32_t target = goto_value();
+        if (target < 1) target = 1;
+        if (target > g_book.pageCount()) target = g_book.pageCount();
+        Serial.printf("[ui] jump to %lu\n", (unsigned long)target);
+        g_page = target - 1;
+        g_goto = false;
+        g_menu = false;
+        show_page(true);
+        return;
+    }
+    if (e.type != KEY_EV_SHORT) return;
+
+    if (e.id == KEY_PREV || e.id == KEY_NEXT) {
+        uint8_t &d = g_goto_digits[g_goto_pos];
+        d = (e.id == KEY_PREV) ? (uint8_t)((d + 9) % 10)
+                               : (uint8_t)((d + 1) % 10);
+        goto_draw(false);
+    } else if (e.id == KEY_OK) {
+        g_goto_pos = (g_goto_pos + g_goto_len - 1) % g_goto_len;
+        goto_draw(false);
+    }
+}
+
+static void handle_menu_key(const KeyEvent &e) {
+    if (e.type == KEY_EV_DOWN || e.type == KEY_EV_UP) return;
+    if (e.id == KEY_POWER && e.type == KEY_EV_LONG) {
+        go_sleep();
+        return;
+    }
+    if (e.id == KEY_POWER && e.type == KEY_EV_SHORT) {
+        g_menu = false;
+        show_page(true);
+        return;
+    }
+    if (e.type == KEY_EV_REPEAT) return;
+    if (e.type != KEY_EV_SHORT) return;
+
+    if (e.id == KEY_PREV) {
+        g_menu_sel = (g_menu_sel + MENU_COUNT - 1) % MENU_COUNT;
+        menu_draw(false);
+    } else if (e.id == KEY_NEXT) {
+        g_menu_sel = (g_menu_sel + 1) % MENU_COUNT;
+        menu_draw(false);
+    } else if (e.id == KEY_OK) {
+        if (g_menu_sel == 0) {
+            g_menu = false;
+            g_settings = true;
+            g_settings_sel = 0;
+            settings_draw(true);
+        } else if (g_menu_sel == 1) {
+            g_menu = false;
+            goto_init();
+            goto_draw(true);
+        } else if (g_menu_sel == 2) {
+            g_menu = false;
+            show_page(true);
+        } else {
+            g_menu = false;
+            g_home = true;
+            library_scan();
+            home(true);
+        }
+    }
+}
+
+static void handle_settings_key(const KeyEvent &e) {
+    if (e.type == KEY_EV_DOWN || e.type == KEY_EV_UP) return;
+    if (e.id == KEY_POWER && e.type == KEY_EV_LONG) {
+        go_sleep();
+        return;
+    }
+    if (e.id == KEY_POWER && e.type == KEY_EV_SHORT) {
+        g_settings = false;
+        g_menu = true;
+        g_menu_sel = 0;
+        menu_draw(true);
+        return;
+    }
+    if (e.type == KEY_EV_REPEAT) return;
+    if (e.type != KEY_EV_SHORT) return;
+
+    if (e.id == KEY_PREV) {
+        g_settings_sel = (g_settings_sel + 2) % 3;
+        settings_draw(false);
+    } else if (e.id == KEY_NEXT) {
+        g_settings_sel = (g_settings_sel + 1) % 3;
+        settings_draw(false);
+    } else if (e.id == KEY_OK) {
+        if (g_settings_sel == 0) {
+            g_refresh_every = (g_refresh_every == 10) ? 20 :
+                              (g_refresh_every == 20) ? 30 : 10;
+            settings_save();
+            settings_draw(false);
+        } else if (g_settings_sel == 1) {
+            uint32_t m = g_sleep_after_ms / 60000UL;
+            m = (m == 0) ? 1 : (m == 1) ? 5 : (m == 5) ? 10 : 0;
+            g_sleep_after_ms = m * 60000UL;
+            settings_save();
+            settings_draw(false);
+        } else {
+            g_settings = false;
+            g_menu = true;
+            g_menu_sel = 0;
+            menu_draw(true);
+        }
+    }
+}
+
+
 static void handle_reader_key(const KeyEvent &e) {
     if (e.type == KEY_EV_DOWN || e.type == KEY_EV_UP) return;
     if (e.id == KEY_POWER && e.type == KEY_EV_LONG) {
@@ -841,7 +1148,7 @@ static void handle_reader_key(const KeyEvent &e) {
         g_page = (g_page + step <= last) ? (g_page + step) : last;
         if (g_page != old) show_page(false);
     } else if (e.id == KEY_OK && e.type == KEY_EV_SHORT) {
-        show_page(true);
+        menu_open();
     }
 }
 
@@ -900,6 +1207,20 @@ static void handle_key(const KeyEvent &e) {
     // 只对短按/长按/重复刷新界面；down/up 只打日志，避免刷两次
     if (e.type == KEY_EV_DOWN || e.type == KEY_EV_UP) return;
 
+    // M5：菜单/设置/跳页优先处理
+    if (g_goto) {
+        handle_goto_key(e);
+        return;
+    }
+    if (g_settings) {
+        handle_settings_key(e);
+        return;
+    }
+    if (g_menu) {
+        handle_menu_key(e);
+        return;
+    }
+
     // 书库：PREV/NEXT 选书，OK 打开，POWER 长按休眠
     if (g_home) {
         if (e.id == KEY_PREV && e.type == KEY_EV_SHORT) {
@@ -917,6 +1238,7 @@ static void handle_key(const KeyEvent &e) {
     // 阅读页：POWER 短按回书库
     if (g_book.isOpen()) {
         if (e.id == KEY_POWER && e.type == KEY_EV_SHORT) {
+            g_menu = g_settings = g_goto = false;
             g_home = true;
             library_scan();
             home(true);
@@ -1065,6 +1387,8 @@ void setup() {
     epd.begin();            // 初始化 SPI + 屏（跳过它 SPI 都没初始化）
     keys_dump_pins();       // 开机打印一次原始电平，便于确认接线
 
+    settings_load();
+    g_menu = g_settings = g_goto = false;
     library_scan();
     bool resumed = resume_progress();
 
@@ -1186,6 +1510,11 @@ void loop() {
             if (s == "prev") ev.id = KEY_PREV;
             else if (s == "next") ev.id = KEY_NEXT;
             else if (s == "ok") ev.id = KEY_OK;
+            else if (s == "oklong") {
+                ev.id = KEY_OK;
+                ev.type = KEY_EV_LONG;
+                ev.heldMs = 900;
+            }
             else if (s == "power") ev.id = KEY_POWER;
             else ok = false;
             if (ok) {
@@ -1212,5 +1541,5 @@ void loop() {
     }
 #endif
 
-    if (IDLE_SLEEP_MS > 0 && millis() - last_activity > IDLE_SLEEP_MS) go_sleep();
+    if (g_sleep_after_ms > 0 && millis() - last_activity > g_sleep_after_ms) go_sleep();
 }

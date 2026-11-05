@@ -61,6 +61,12 @@ public:
     // 返回这串文字画完后的 x 坐标
     int16_t text_width(const char *s, uint8_t scale = 1);
 
+    // 中文 UI 字库（Noto Sans SC 子集，1bpp）；size = 15 或 12。
+    // UTF-8 输入，ASCII 字符自动退回 5x7 字库。
+    void draw_cjk_text(int16_t x, int16_t y, const char *s,
+                       uint8_t color = EPD_BLACK, uint8_t size = 15);
+    int16_t cjk_text_width(const char *s, uint8_t size = 15);
+
     // 简单排版：按 '|' 或 '\n' 换行，放不下的行自动丢弃
     void draw_page(const char *text, int16_t x, int16_t y, uint8_t scale,
                    int16_t line_gap = 4);

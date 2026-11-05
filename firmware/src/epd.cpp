@@ -11,6 +11,7 @@
 //  6) 刷完立刻 sleep()，长时间加高压会永久坏屏
 #include "epd.h"
 #include "font_ascii.h"
+#include "font_cjk.h"
 #include <SPI.h>
 
 // 屏在忙时（全刷 2 秒多）仍要能扫按键；由 main 注册，回调只做扫描/入队。
@@ -516,6 +517,93 @@ void EPD::draw_text(int16_t x, int16_t y, const char *s, uint8_t color, uint8_t 
 int16_t EPD::text_width(const char *s, uint8_t scale) {
     if (scale < 1) scale = 1;
     return (int16_t)strlen(s) * (FONT_ASCII_W + 1) * scale;
+}
+
+static uint32_t utf8_next(const char *&p) {
+    uint8_t c = (uint8_t)*p++;
+    if (c < 0x80) return c;
+    if ((c & 0xE0) == 0xC0) {
+        uint32_t v = (c & 0x1F) << 6;
+        if (*p) v |= ((uint8_t)*p++) & 0x3F;
+        return v;
+    }
+    if ((c & 0xF0) == 0xE0) {
+        uint32_t v = (c & 0x0F) << 12;
+        if (*p) v |= (((uint8_t)*p++) & 0x3F) << 6;
+        if (*p) v |= ((uint8_t)*p++) & 0x3F;
+        return v;
+    }
+    if ((c & 0xF8) == 0xF0) {
+        uint32_t v = (c & 0x07) << 18;
+        if (*p) v |= (((uint8_t)*p++) & 0x3F) << 12;
+        if (*p) v |= (((uint8_t)*p++) & 0x3F) << 6;
+        if (*p) v |= ((uint8_t)*p++) & 0x3F;
+        return v;
+    }
+    return '?';
+}
+
+static const CjkGlyph *cjk_find(const CjkGlyph *idx, int n, uint32_t cp) {
+    int lo = 0, hi = n - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (idx[mid].cp == cp) return &idx[mid];
+        if (idx[mid].cp < cp) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return nullptr;
+}
+
+void EPD::draw_cjk_text(int16_t x, int16_t y, const char *s,
+                        uint8_t color, uint8_t size) {
+    const CjkGlyph *idx;
+    const uint8_t *bits;
+    int n;
+    uint8_t w, h, stride;
+    if (size == 12) {
+        idx = CJK12_INDEX; bits = CJK12_BITS;
+        n = (int)(sizeof(CJK12_INDEX) / sizeof(CJK12_INDEX[0]));
+        w = CJK12_W; h = CJK12_H; stride = CJK12_STRIDE;
+    } else {
+        size = 15;
+        idx = CJK15_INDEX; bits = CJK15_BITS;
+        n = (int)(sizeof(CJK15_INDEX) / sizeof(CJK15_INDEX[0]));
+        w = CJK15_W; h = CJK15_H; stride = CJK15_STRIDE;
+    }
+
+    while (*s) {
+        uint32_t cp = utf8_next(s);
+        if (cp < 0x80) {
+            draw_char(x, y + (h - FONT_ASCII_H) / 2, (char)cp, color, 1);
+            x += FONT_ASCII_W + 1;
+            continue;
+        }
+        const CjkGlyph *g = cjk_find(idx, n, cp);
+        if (!g) {
+            draw_char(x, y + (h - FONT_ASCII_H) / 2, '?', color, 1);
+            x += w;
+            continue;
+        }
+        const uint8_t *b = bits + g->off;
+        for (uint8_t row = 0; row < h; row++) {
+            const uint8_t *r = b + row * stride;
+            for (uint8_t col = 0; col < w; col++) {
+                if (r[col >> 3] & (0x80 >> (col & 7)))
+                    set_pixel(x + col, y + row, color);
+            }
+        }
+        x += w;
+    }
+}
+
+int16_t EPD::cjk_text_width(const char *s, uint8_t size) {
+    if (size != 12) size = 15;
+    int16_t x = 0;
+    while (*s) {
+        uint32_t cp = utf8_next(s);
+        x += (cp < 0x80) ? (FONT_ASCII_W + 1) : size;
+    }
+    return x;
 }
 
 // 简单排版：按 '|' 或 '\n' 换行，超出屏幕底部的行自动丢掉
