@@ -1014,7 +1014,7 @@ static void handle_goto_key(const KeyEvent &e) {
         g_goto = false;
         g_menu = true;
         g_menu_sel = 1;
-        menu_draw(true);
+        menu_draw(false);
         return;
     }
     if (e.type == KEY_EV_REPEAT) return;
@@ -1068,11 +1068,11 @@ static void handle_menu_key(const KeyEvent &e) {
             g_menu = false;
             g_settings = true;
             g_settings_sel = 0;
-            settings_draw(true);
+            settings_draw(false);
         } else if (g_menu_sel == 1) {
             g_menu = false;
             goto_init();
-            goto_draw(true);
+            goto_draw(false);
         } else if (g_menu_sel == 2) {
             g_menu = false;
             show_page(true);
@@ -1095,7 +1095,7 @@ static void handle_settings_key(const KeyEvent &e) {
         g_settings = false;
         g_menu = true;
         g_menu_sel = 0;
-        menu_draw(true);
+        menu_draw(false);
         return;
     }
     if (e.type == KEY_EV_REPEAT) return;
@@ -1123,7 +1123,7 @@ static void handle_settings_key(const KeyEvent &e) {
             g_settings = false;
             g_menu = true;
             g_menu_sel = 0;
-            menu_draw(true);
+            menu_draw(false);
         }
     }
 }
